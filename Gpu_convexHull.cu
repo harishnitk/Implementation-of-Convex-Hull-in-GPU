@@ -5,10 +5,31 @@
 #include<string.h>
 #include<sstream>
 #include<stdio.h>
+#include<thrust/device_vector.h>
+#include<thrust/copy.h>
+#include<thrust/scan.h>
+#include <thrust/sort.h>
+#include<vector>
+#include<climits>
 
 using namespace std;
 
 typedef pair<long int,long int> Point;
+
+struct convexHull
+{
+   Point point;
+   long int label;
+   long int distance;
+   int mark;
+};
+
+struct assignMax
+{
+   long int max;
+   long int index;  
+};
+
 Point *hull;
 
 #define CUDA_CHECK(ans)                                                   \
@@ -28,7 +49,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line,bool abort = 
 @ region Definition of global kernel function
 */
 
-__global__ void lowerHull(Point *input, long int *label, long int *distance ,Point *devHull,long int size)
+__global__ void lowerHull(convexHull *input,Point *devHull,long int size)
 {
    long int Idx = blockIdx.x*blockDim.x+threadIdx.x;
    
@@ -38,19 +59,54 @@ __global__ void lowerHull(Point *input, long int *label, long int *distance ,Poi
    if((Idx)<size)
    {
 
-     Point P = input[Idx];
-     long lb = label[Idx];
+     Point P = input[Idx].point;
+     long int lb = input[Idx].label;
      Point min = devHull[lb];
      Point max = devHull[lb+1];
-     distance[Idx] = (P.second-min.second)*(max.first-min.first)-(max.second-min.second)*(P.first-min.first);
+     input[Idx].distance = (P.second-min.second)*(max.first-min.first)-(max.second-min.second)*(P.first-min.first);
+     if(input[Idx].distance<0)
+     {
+       input[Idx].mark = -1;
+     }else
+     {
+       input[Idx].mark = 1;
+     }
    }
 
 }
 
-__global__ void segmentedScan(Point *dist, Point *label, long int size)
+__global__ void scan(convexHull *input,assignMax *store,int size)
 {
-    long int Idx = blockIdx.x*blockDim.x+threadIdx;
+   int Idx = blockIdx.x*blockDim.x+threadIdx.x;
+   long int itr = 0;
+  
+   for(;itr<size;itr++)
+   {
+      if(Idx==input[itr].label)
+      {
+        while(itr<size&&Idx==input[itr].label)
+        {
+           if(store[Idx].max<input[itr].distance)
+           {
+              store[Idx].max = input[itr].distance;
+              store[Idx].index = itr;
+              //printf("%ld\n",store[Idx].max);
+           }
+           itr++;
+        }
+        break;
+      }
+   }
 }
+
+
+struct labelbased
+{
+  __host__ __device__ bool operator()(convexHull &x, convexHull &y)
+  {
+     return x.label<y.label;
+  }
+};
 
 /*
 @endregion
@@ -71,25 +127,26 @@ int main(int argc, char *argv[]) {
   /*
   @region declaration
   */
-  Point *hostInput = new Point[inputLength];
-  Point *deviceInput = new Point[inputLength];;
+  convexHull *hostInput = new convexHull[inputLength];
+  convexHull *deviceInput = new convexHull[inputLength];
+  convexHull *original = new convexHull[inputLength];
   hull = new Point[inputLength];
   Point *deviceHull = new Point[inputLength];
-  long int *Label = new long int[inputLength];
-  long int *Distance = new long int[inputLength];
-  long int *deviceLabel = new long int[inputLength];;
-  long int *deviceDistance = new long int[inputLength];; 
+  long int hull_length = 2;
   /*
   @endregion
   */
-
-  memset(Label,0,inputLength*sizeof(long int));
-  memset(Distance,0,inputLength*sizeof(long int));
  
   for(itr=0;itr<inputLength;itr++)
   {
-     file>>hostInput[itr].first;
-     file>>hostInput[itr].second;
+     file>>hostInput[itr].point.first;
+     file>>hostInput[itr].point.second;
+     hostInput[itr].label = 0;
+     original[itr].label = 0;
+     original[itr].distance = 0;
+     hostInput[itr].distance = 0;
+     original[itr].point.first = hostInput[itr].point.first;
+     original[itr].point.second = hostInput[itr].point.second;
   }
   file.close();
 
@@ -101,21 +158,21 @@ int main(int argc, char *argv[]) {
   */
   for(itr=0;itr<inputLength;itr++)
   {
-     if(leftmost_point.first>hostInput[itr].first)
+     if(leftmost_point.first>hostInput[itr].point.first)
      {
-        leftmost_point = hostInput[itr];
+        leftmost_point = hostInput[itr].point;
      }
-     if(rightmost_point.first<hostInput[itr].first)
+     if(rightmost_point.first<hostInput[itr].point.first)
      {
-        rightmost_point = hostInput[itr];
+        rightmost_point = hostInput[itr].point;
      }
   }
 
   /*
   @region Memory-Allocation
   */
-  cudaMalloc((void **)&deviceInput,inputLength*sizeof(Point));
-  cudaMemcpy(deviceInput,hostInput,inputLength*sizeof(Point),cudaMemcpyHostToDevice);
+  cudaMalloc((void **)&deviceInput,inputLength*sizeof(convexHull));
+  cudaMemcpy(deviceInput,hostInput,inputLength*sizeof(convexHull),cudaMemcpyHostToDevice);
   
   //--------------- insert point in hull -----------//
   hull[0] = leftmost_point;
@@ -124,10 +181,6 @@ int main(int argc, char *argv[]) {
 
   cudaMalloc((void **)&deviceHull,inputLength*sizeof(Point));
   cudaMemcpy(deviceHull,hull,inputLength*sizeof(Point),cudaMemcpyHostToDevice);
-  cudaMalloc((void **)&deviceLabel,inputLength*sizeof(long int));
-  cudaMemcpy(deviceLabel,Label,inputLength*sizeof(long int),cudaMemcpyHostToDevice);
-  cudaMalloc((void **)&deviceDistance,inputLength*sizeof(long int));
-  cudaMemcpy(deviceDistance,Distance,inputLength*sizeof(long int),cudaMemcpyHostToDevice); 
   
   /*
   @endregion
@@ -137,12 +190,44 @@ int main(int argc, char *argv[]) {
   @ param calculate the LowerHull
   */
   
-  lowerHull<<<blocks,threads_per_block>>>(deviceInput,deviceLabel,deviceDistance,deviceHull,inputLength);
-  //upperHull<< blocks , threads_per_block >>( deviceInput, deviceLabel, deviceDistance, inputLength ); 
-  //cudaMemcpy(Distance,deviceDistance,inputLength*sizeof(Point),cudaMemcpyDeviceToHost);
+  lowerHull<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength);
+  cudaMemcpy(hostInput,deviceInput,inputLength*sizeof(convexHull),cudaMemcpyDeviceToHost);
   
-  segmentedScan<<<blocks , threads_per_block >>>(deviceDistance,deviceLabel,inputLength);
+  thrust::device_vector<convexHull> devI(hostInput,hostInput+inputLength);
+  thrust::sort(devI.begin(),devI.end(),labelbased());
+  thrust::copy(devI.begin(),devI.end(),hostInput);
+
   
+  int label_thread = hostInput[inputLength-1].label+1;
+
+  assignMax *devMax = new assignMax[label_thread];
+  assignMax *hostMax = new assignMax[label_thread];
+  for(int m=0;m<label_thread;m++)
+  {
+    hostMax[m].max = INT_MIN;
+    hostMax[m].index = -1;
+  }
+
+  cudaMalloc((void **)&devMax,label_thread*sizeof(assignMax));
+  cudaMemcpy(devMax,hostMax,label_thread*sizeof(assignMax),cudaMemcpyHostToDevice);
+
+  cudaMalloc((void **)&deviceInput,inputLength*sizeof(convexHull));
+  cudaMemcpy(deviceInput,hostInput,inputLength*sizeof(convexHull),cudaMemcpyHostToDevice);
+  
+  scan<<<1,label_thread>>>(deviceInput,devMax,inputLength);
+  cudaMemcpy(hostMax,devMax,label_thread*sizeof(assignMax),cudaMemcpyDeviceToHost);  
+  
+  /*
+   @method update hull
+   @description []
+  */
+  
+  for(int k=0;k<label_thread;k++)
+  {
+    hull[hull_length] = hostInput[hostMax[k].index].point;
+    hull_length++;
+  }
+   
   /*
   @endregion
   */
