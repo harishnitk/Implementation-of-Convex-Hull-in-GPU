@@ -16,6 +16,7 @@
 #include<curand_kernel.h>
 #include<cuda_runtime.h>
 #include<thrust/extrema.h>
+#include<algorithm>
 //#include<Timer.h>
 
 #define CUDA_CHECK(ans)                                                   \
@@ -67,7 +68,6 @@ struct label_partitionbased
   }
 };
 
-
 Point *hull;
 Point *lhull;
 long int inputLength,itr;
@@ -83,6 +83,11 @@ long int append_point_len = 0;
 assignMax *devMax;
 assignMax *hostMax;
 bool flag = false;
+
+bool comparision(Point a,Point b)
+{
+    return (a.first<b.first);
+}
 
 /*
  @region kernel functions
@@ -410,6 +415,9 @@ int main(int argc, char *argv[]) {
 
       update_label<<<1,label_thread>>>(deviceInput,devMax,inputLength);
       cudaMemcpy(hostInput,deviceInput,sizeof(convexHull)*inputLength,cudaMemcpyDeviceToHost);
+      
+      std::sort(hull,hull+hull_length,comparision);
+      
       cudaDeviceSynchronize();
   
   }while(prev_len!=hull_length);
@@ -440,7 +448,7 @@ int main(int argc, char *argv[]) {
       cudaMemcpy(deviceInput,hostInput,inputLength*sizeof(convexHull),cudaMemcpyHostToDevice);
 
       cudaMalloc((void **)&deviceHull,inputLength*sizeof(Point));
-      cudaMemcpy(deviceHull,hull,inputLength*sizeof(Point),cudaMemcpyHostToDevice);
+      cudaMemcpy(deviceHull,lhull,inputLength*sizeof(Point),cudaMemcpyHostToDevice);
 
       calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength);
       cudaMemcpy(hostInput,deviceInput,inputLength*sizeof(convexHull),cudaMemcpyDeviceToHost);
@@ -486,15 +494,31 @@ int main(int argc, char *argv[]) {
 
       update_label<<<1,label_thread>>>(deviceInput,devMax,inputLength);
       cudaMemcpy(hostInput,deviceInput,sizeof(convexHull)*inputLength,cudaMemcpyDeviceToHost);
+      
+      std::sort(lhull,lhull+lhull_length,comparision);
 
       cudaDeviceSynchronize();
 
   }while(prev_len!=lhull_length);
   
-  cout<<" hull "<<endl;
-  for(int k=0;k<hull_length;k++)
+  /*
+  @ param update the upperhull and lower hull
+  */
+  
+  for(int j=0;j<lhull_length;j++)
   {
-    cout<<hull[k].first<<" "<<hull[k].second<<endl;
+    bool check = true;
+    for(int k=0;k<hull_length;k++){
+       if(hull[k].first==lhull[j].first&&hull[k].second==lhull[j].second)
+       {
+         check = false;
+         break;
+       }
+    }
+    if(check)
+    {
+       hull[hull_length++] = lhull[j];
+    }
   }
 
   cudaDeviceSynchronize();
