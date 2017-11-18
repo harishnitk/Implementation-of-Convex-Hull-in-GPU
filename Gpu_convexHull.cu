@@ -51,23 +51,6 @@ struct assignMax
    int index;  
 };
 
-//write overloaded function
-struct labelbased
-{
-  __host__ __device__ bool operator()(convexHull &x, convexHull &y)
-  {
-     return x.label<y.label;
-  }
-};
-
-struct label_partitionbased
-{
-  __host__ __device__ bool operator()(convexHull &x, convexHull &y)
-  {
-     return (x.label<y.label&&x.point.first<y.point.first);
-  }
-};
-
 Point *hull;
 Point *lhull;
 long int inputLength,itr;
@@ -83,10 +66,16 @@ long int append_point_len = 0;
 assignMax *devMax;
 assignMax *hostMax;
 bool flag = false;
+int maxlabel = 1;
 
 bool comparision(Point a,Point b)
 {
     return (a.first<b.first);
+}
+
+bool labelsort(convexHull a, convexHull b)
+{
+   return a.label<b.label;
 }
 
 /*
@@ -94,7 +83,7 @@ bool comparision(Point a,Point b)
 */
 
 
-__global__ void calculate_perpendicularDistance_And_markNegDistance(convexHull *input,Point *devHull,long int size)
+__global__ void calculate_perpendicularDistance_And_markNegDistance(convexHull *input,Point *devHull,long int size,int mlabel)
 {
    long int Idx = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -112,11 +101,12 @@ __global__ void calculate_perpendicularDistance_And_markNegDistance(convexHull *
 
      if(input[Idx].distance<0)
      {
-       input[Idx].mark = -1;
+        input[Idx].mark = -1;
      }else
      {
-       input[Idx].mark = 1;
+        input[Idx].mark = 1;
      }
+     
    }  
 }
 
@@ -133,7 +123,7 @@ __global__ void scan(convexHull *input,assignMax *store,int size,bool upper)
         {
           while(itr<size&&Idx==input[itr].label)
           {
-             if(store[Idx].max<input[itr].distance)
+             if((input[itr].distance>0)&&(store[Idx].max<input[itr].distance))
              {
                 store[Idx].max = input[itr].distance;
                 store[Idx].p.first = input[itr].point.first;
@@ -145,6 +135,7 @@ __global__ void scan(convexHull *input,assignMax *store,int size,bool upper)
           }
           break;
         }
+        itr++;
      }
     }
     else
@@ -155,7 +146,7 @@ __global__ void scan(convexHull *input,assignMax *store,int size,bool upper)
           {
             while(itr<size&&Idx==input[itr].label)
             {
-               if(store[Idx].max>input[itr].distance)
+               if((input[itr].distance<0)&&(store[Idx].max>input[itr].distance))
                {
                   store[Idx].max = input[itr].distance;
                   store[Idx].p.first = input[itr].point.first;
@@ -167,6 +158,7 @@ __global__ void scan(convexHull *input,assignMax *store,int size,bool upper)
             }
             break;
           }
+          itr++;
        }
     }
 }
@@ -241,7 +233,7 @@ void update_Hull(int labels,bool upper)
             }
         }
 
-        if(flag)
+        if(flag&&hostMax[k].l!=-1)
         {
             hull[hull_length] = hostInput[hostMax[k].index].point;
             hull_length++;
@@ -262,7 +254,7 @@ void update_Hull(int labels,bool upper)
             }
         }
 
-        if(flag)
+        if(flag&&hostMax[k].l!=-1)
         {
             lhull[lhull_length] = hostInput[hostMax[k].index].point;
             lhull_length++;
@@ -291,6 +283,15 @@ void update_And_Remove_MarkPoints(convexHull p[],long int &p_len,convexHull ap[]
        }
     }
     p_len = i;
+}
+
+void printOutput()
+{
+   int it = 0;
+   for(;it<hull_length;it++)
+   {
+      cout<<hull[it].first<<" "<<hull[it].second<<endl;
+   }
 }
 
 int main(int argc, char *argv[]) {
@@ -347,7 +348,7 @@ int main(int argc, char *argv[]) {
   //time.Start();
 
   /*
-   @params [lower convexHull]
+   @params [upper convexHull]
    @descriptor {finding the point which is the part of lower hull}
   */
   
@@ -365,14 +366,12 @@ int main(int argc, char *argv[]) {
       cudaMalloc((void **)&deviceHull,inputLength*sizeof(Point));
       cudaMemcpy(deviceHull,hull,inputLength*sizeof(Point),cudaMemcpyHostToDevice);
 
-      calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength);
+      calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength,maxlabel);
       cudaMemcpy(hostInput,deviceInput,inputLength*sizeof(convexHull),cudaMemcpyDeviceToHost);
       
       //sort based on the label
-      thrust::device_vector<convexHull> devI(hostInput,hostInput+inputLength);
-
-      thrust::sort(devI.begin(),devI.end(),labelbased());
-      thrust::copy(devI.begin(),devI.end(),hostInput);
+      
+      std::sort(hostInput,hostInput+inputLength,labelsort);
       
       int label_thread = hostInput[inputLength-1].label+1;
 
@@ -380,7 +379,7 @@ int main(int argc, char *argv[]) {
       hostMax = new assignMax[label_thread];
 
       initialize_Max(hostMax,label_thread,true);
-
+      
       cudaMalloc((void **)&devMax,label_thread*sizeof(assignMax));
       cudaMemcpy(devMax,hostMax,label_thread*sizeof(assignMax),cudaMemcpyHostToDevice);
 
@@ -389,12 +388,11 @@ int main(int argc, char *argv[]) {
       
       scan<<<1,label_thread>>>(deviceInput,devMax,inputLength,true);
       cudaMemcpy(hostMax,devMax,label_thread*sizeof(assignMax),cudaMemcpyDeviceToHost);
-      
       /*
        @method update hull
        @description [which have distinct points in hull]
       */
- 
+
       prev_len = hull_length;
 
       update_Hull(label_thread,true);
@@ -405,17 +403,17 @@ int main(int argc, char *argv[]) {
         lower_flag = true;
       }
       
-      thrust::device_vector<convexHull> init(hostInput,hostInput+inputLength);
-
-      thrust::sort(init.begin(),init.end(),label_partitionbased());
-      thrust::copy(init.begin(),init.end(),hostInput);
+      //sort label_partition
       
       cudaMalloc((void **)&deviceInput,inputLength*sizeof(convexHull));
       cudaMemcpy(deviceInput,hostInput,inputLength*sizeof(convexHull),cudaMemcpyHostToDevice);
 
       update_label<<<1,label_thread>>>(deviceInput,devMax,inputLength);
+      
       cudaMemcpy(hostInput,deviceInput,sizeof(convexHull)*inputLength,cudaMemcpyDeviceToHost);
       
+      maxlabel = label_thread;
+
       std::sort(hull,hull+hull_length,comparision);
       
       cudaDeviceSynchronize();
@@ -428,19 +426,27 @@ int main(int argc, char *argv[]) {
   @descriptor {finding the point which is the part of upper hull, having -ve perpendicular distance}
   */
   
-  appendPoint[append_point_len++].point = leftmost_point;
-  appendPoint[append_point_len++].point = rightmost_point;
-  appendPoint[append_point_len++].label = 0;
-  appendPoint[append_point_len++].label = 0;
+  appendPoint[append_point_len].point = leftmost_point;
+  appendPoint[append_point_len].label = 0;
+  append_point_len++;
+  appendPoint[append_point_len].point = rightmost_point;
+  appendPoint[append_point_len].label = 0;
+  append_point_len++;
   inputLength = append_point_len;
   
   thrust::device_vector<convexHull> temp(appendPoint,appendPoint+append_point_len);
   thrust::copy(temp.begin(),temp.end(),hostInput);
   
+
+  lhull = new Point[inputLength];
+
   lhull[0] = leftmost_point;
   lhull[1] = rightmost_point;
 
   // finding the lower hull
+  
+  maxlabel = 1;
+  
   do
   {
       
@@ -450,14 +456,13 @@ int main(int argc, char *argv[]) {
       cudaMalloc((void **)&deviceHull,inputLength*sizeof(Point));
       cudaMemcpy(deviceHull,lhull,inputLength*sizeof(Point),cudaMemcpyHostToDevice);
 
-      calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength);
+      calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength,maxlabel);
       cudaMemcpy(hostInput,deviceInput,inputLength*sizeof(convexHull),cudaMemcpyDeviceToHost);
-      
-      //sort based on the label
-      thrust::device_vector<convexHull> devI(hostInput,hostInput+inputLength);
+    
 
-      thrust::sort(devI.begin(),devI.end(),labelbased());
-      thrust::copy(devI.begin(),devI.end(),hostInput);
+      //sort based on the label
+
+      std::sort(hostInput,hostInput+inputLength,labelsort);//findlabel(inputLength)+1;
       
       int label_thread = hostInput[inputLength-1].label+1;
 
@@ -484,10 +489,7 @@ int main(int argc, char *argv[]) {
 
       update_Hull(label_thread,false);
       
-      thrust::device_vector<convexHull> init(hostInput,hostInput+inputLength);
-
-      thrust::sort(init.begin(),init.end(),label_partitionbased());
-      thrust::copy(init.begin(),init.end(),hostInput);
+      //sort
       
       cudaMalloc((void **)&deviceInput,inputLength*sizeof(convexHull));
       cudaMemcpy(deviceInput,hostInput,inputLength*sizeof(convexHull),cudaMemcpyHostToDevice);
@@ -495,16 +497,19 @@ int main(int argc, char *argv[]) {
       update_label<<<1,label_thread>>>(deviceInput,devMax,inputLength);
       cudaMemcpy(hostInput,deviceInput,sizeof(convexHull)*inputLength,cudaMemcpyDeviceToHost);
       
+      maxlabel = label_thread;
+
       std::sort(lhull,lhull+lhull_length,comparision);
 
       cudaDeviceSynchronize();
-
+  
   }while(prev_len!=lhull_length);
   
   /*
   @ param update the upperhull and lower hull
   */
   
+
   for(int j=0;j<lhull_length;j++)
   {
     bool check = true;
@@ -520,6 +525,8 @@ int main(int argc, char *argv[]) {
        hull[hull_length++] = lhull[j];
     }
   }
+
+  printOutput();
 
   cudaDeviceSynchronize();
   
