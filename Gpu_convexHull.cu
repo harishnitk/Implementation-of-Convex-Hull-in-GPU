@@ -83,7 +83,7 @@ bool labelsort(convexHull a, convexHull b)
 */
 
 
-__global__ void calculate_perpendicularDistance_And_markNegDistance(convexHull *input,Point *devHull,long int size,int mlabel)
+__global__ void calculate_perpendicularDistance_And_markNegDistance(convexHull *input,Point *devHull,long int size)
 {
    long int Idx = threadIdx.x+blockIdx.x*blockDim.x;
 
@@ -356,6 +356,8 @@ int main(int argc, char *argv[]) {
 
   int prev_len = 2;
   
+  clock_t t = clock();
+
   do
   {
       //compute upperhull
@@ -366,7 +368,7 @@ int main(int argc, char *argv[]) {
       cudaMalloc((void **)&deviceHull,inputLength*sizeof(Point));
       cudaMemcpy(deviceHull,hull,inputLength*sizeof(Point),cudaMemcpyHostToDevice);
 
-      calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength,maxlabel);
+      calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength);
       cudaMemcpy(hostInput,deviceInput,inputLength*sizeof(convexHull),cudaMemcpyDeviceToHost);
       
       //sort based on the label
@@ -456,7 +458,7 @@ int main(int argc, char *argv[]) {
       cudaMalloc((void **)&deviceHull,inputLength*sizeof(Point));
       cudaMemcpy(deviceHull,lhull,inputLength*sizeof(Point),cudaMemcpyHostToDevice);
 
-      calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength,maxlabel);
+      calculate_perpendicularDistance_And_markNegDistance<<<blocks,threads_per_block>>>(deviceInput,deviceHull,inputLength);
       cudaMemcpy(hostInput,deviceInput,inputLength*sizeof(convexHull),cudaMemcpyDeviceToHost);
     
 
@@ -505,6 +507,9 @@ int main(int argc, char *argv[]) {
   
   }while(prev_len!=lhull_length);
   
+  t = clock() - t;
+
+  cout<<"Total execution time is "<<(double)t/(double)CLOCKS_PER_SEC<<endl;
   /*
   @ param update the upperhull and lower hull
   */
